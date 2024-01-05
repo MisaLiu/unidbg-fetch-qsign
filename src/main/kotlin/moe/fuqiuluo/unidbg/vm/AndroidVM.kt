@@ -1,35 +1,40 @@
 package moe.fuqiuluo.unidbg.vm
 
+import CONFIG
 import com.github.unidbg.arm.backend.DynarmicFactory
-import com.github.unidbg.arm.backend.HypervisorFactory
 import com.github.unidbg.arm.backend.KvmFactory
-import com.github.unidbg.linux.LinuxModule
-import com.github.unidbg.linux.LinuxSymbol
+import com.github.unidbg.arm.backend.Unicorn2Factory
 import com.github.unidbg.linux.android.AndroidEmulatorBuilder
 import com.github.unidbg.linux.android.dvm.DalvikModule
 import com.github.unidbg.linux.android.dvm.DvmClass
 import com.github.unidbg.virtualmodule.android.AndroidModule
-import debug
+import org.apache.commons.logging.LogFactory
 import java.io.Closeable
 import java.io.File
-import java.util.Arrays
 
-open class AndroidVM(packageName: String): Closeable {
+open class AndroidVM(packageName: String, dynarmic: Boolean, unicorn: Boolean, kvm: Boolean): Closeable {
     internal val emulator = AndroidEmulatorBuilder
         .for64Bit()
         .setProcessName(packageName)
-        .addBackendFactory(DynarmicFactory(true))
-        .addBackendFactory(KvmFactory(true))
-        // 修复Linux arm设备，不支持的问题
-        //.addBackendFactory(HypervisorFactory(true))
+        .apply {
+            if (dynarmic) addBackendFactory(DynarmicFactory(true))
+            if (unicorn) addBackendFactory(Unicorn2Factory(true))
+            if (kvm) addBackendFactory(KvmFactory(true))
+        }
         .build()!!
     protected val memory = emulator.memory!!
     internal val vm = emulator.createDalvikVM()!!
 
     init {
-        vm.setVerbose(debug)
+        if (CONFIG.unidbg.debug) {
+            System.setProperty("org.apache.commons.logging.Log", "org.apache.commons.logging.impl.SimpleLog")
+            System.setProperty("org.apache.commons.logging.simplelog.defaultlog", "debug")
+            LogFactory.getFactory()
+                .attributeNames.forEach { println(it) }
+        }
+        vm.setVerbose(CONFIG.unidbg.debug)
         val syscall = emulator.syscallHandler
-        syscall.isVerbose = debug
+        syscall.isVerbose = CONFIG.unidbg.debug
         syscall.setEnableThreadDispatcher(true)
         AndroidModule(emulator, vm).register(memory)
     }

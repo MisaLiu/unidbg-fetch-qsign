@@ -1,55 +1,72 @@
-@file:OptIn(DelicateCoroutinesApi::class)
 package moe.fuqiuluo.unidbg
 
 import com.github.unidbg.linux.android.dvm.DvmObject
-import com.github.unidbg.worker.Worker
-import com.github.unidbg.worker.WorkerPool
-import kotlinx.coroutines.DelicateCoroutinesApi
-import kotlinx.coroutines.GlobalScope
-import kotlinx.coroutines.launch
-import moe.fuqiuluo.net.SimpleClient
+import com.tencent.mobileqq.qsec.qsecurity.DeepSleepDetector
+import moe.fuqiuluo.comm.EnvData
 import moe.fuqiuluo.unidbg.env.FileResolver
 import moe.fuqiuluo.unidbg.env.QSecJni
-import moe.fuqiuluo.unidbg.pool.FixedWorkPool
 import moe.fuqiuluo.unidbg.vm.AndroidVM
 import moe.fuqiuluo.unidbg.vm.GlobalData
-import org.slf4j.LoggerFactory
 import java.io.File
 import javax.security.auth.Destroyable
-
-lateinit var workerPool: FixedWorkPool
-
-class QSecVMWorker(pool: WorkerPool, coreLibPath: File): Worker(pool) {
-    private val instance: QSecVM = QSecVM(coreLibPath)
-
-    fun <T> work(block: QSecVM.() -> T): T {
-        return block.invoke(instance)
-    }
-
-    override fun destroy() {
-        instance.destroy()
-    }
-}
+import kotlin.system.exitProcess
 
 class QSecVM(
-    val coreLibPath: File
-): Destroyable, AndroidVM("com.tencent.mobileqq") {
-    companion object {
-        private val logger = LoggerFactory.getLogger(QSecVM::class.java)!!
-    }
-
+    val coreLibPath: File,
+    val envData: EnvData,
+    dynarmic: Boolean,
+    unicorn: Boolean,
+    kvm: Boolean
+): Destroyable, AndroidVM(envData.packageName, dynarmic, unicorn, kvm) {
     private var destroy: Boolean = false
     private var isInit: Boolean = false
-    val global = GlobalData()
-    private val client = SimpleClient("msfwifi.3g.qq.com", 8080)
+    internal val global = GlobalData()
 
     init {
-        //QSecModule(emulator, vm).register(memory)
         runCatching {
             val resolver = FileResolver(23, this@QSecVM)
             memory.setLibraryResolver(resolver)
             emulator.syscallHandler.addIOResolver(resolver)
-            vm.setJni(QSecJni(this, client, global))
+            vm.setJni(QSecJni(envData, this, global))
+
+            if (envData.packageName == "com.tencent.mobileqq") {
+                println("QSign-Unidbg 白名单模式")
+                vm.setWhiteMode(true)
+                arrayOf(
+                    "android/os/Build\$VERSION",
+                    "android/content/pm/ApplicationInfo",
+                    "com/tencent/mobileqq/fe/IFEKitLog",
+                    "com/tencent/mobileqq/channel/ChannelProxy",
+                    "com/tencent/mobileqq/qsec/qsecurity/QSec",
+                    "com/tencent/mobileqq/qsec/qsecurity/QSecConfig",
+                    "com/tencent/mobileqq/sign/QQSecuritySign\$SignResult",
+                    "java/lang/String",
+                    "com/tencent/mobileqq/qsec/qsecest/QsecEst",
+                    "com/tencent/qqprotect/qsec/QSecFramework",
+                    "com/tencent/mobileqq/dt/app/Dtc",
+                    "android/provider/Settings\$System",
+                    "com/tencent/mobileqq/fe/utils/DeepSleepDetector",
+                    "com/tencent/mobileqq/dt/model/FEBound",
+                    "java/lang/ClassLoader",
+                    "java/lang/Thread",
+                    "android/content/Context",
+                    "android/content/ContentResolver",
+                    "java/io/File",
+                    "java/lang/Integer",
+                    "java/lang/Object",
+                    "com/tencent/mobileqq/sign/QQSecuritySign",
+                    "com/tencent/mobileqq/channel/ChannelManager",
+                    "com/tencent/mobileqq/dt/Dtn",
+                    "com/tencent/mobileqq/qsec/qsecdandelionsdk/Dandelion",
+                    "com/tencent/mobileqq/qsec/qsecprotocol/ByteData",
+                    "com/tencent/mobileqq/qsec/qseccodec/SecCipher",
+                ).forEach {
+                    vm.addFilterClass(it)
+                }
+            } else {
+                vm.addFilterClass("com/tencent/mobileqq/dt/Dc")
+                vm.addFilterClass("com/tencent/mobileqq/dt/Dte")
+            }
         }.onFailure {
             it.printStackTrace()
         }
@@ -58,16 +75,17 @@ class QSecVM(
     fun init() {
         if (isInit) return
         runCatching {
-            GlobalScope.launch {
-                client.connect()
-                client.initConnection()
+            coreLibPath.resolve("libpoxy.so").let {
+                if (it.exists()) {
+                    loadLibrary(it)
+                }
             }
-            loadLibrary(coreLibPath.resolve("libQSec.so"))
             loadLibrary(coreLibPath.resolve("libfekit.so"))
+            global["DeepSleepDetector"] = DeepSleepDetector()
             this.isInit = true
         }.onFailure {
-            logger.error("Failed to init QSign: $it")
             it.printStackTrace()
+            exitProcess(1)
         }
     }
 
@@ -87,7 +105,6 @@ class QSecVM(
     override fun destroy() {
         if (isDestroyed) return
         this.destroy = true
-        this.client.close()
         this.close()
     }
 }
